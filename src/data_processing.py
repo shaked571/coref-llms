@@ -1,21 +1,15 @@
-import os
-from pathlib import Path
+from typing import List
 from collections import defaultdict
+from difflib import SequenceMatcher
 from nltk import tokenize
 
 import re
 import copy
+import difflib
 
 from transformers import AutoTokenizer
 
 from utils.io_utils import *
-"""
-input:
-'ה אשמה אינה ב ה_ שיטה או ב ה_ מדגם, אלא ב שתי עובדות : (1) אמריקאים אינם מתעניינים ביותר ב ה_ תהליך ה אלקטורלי, ו גם[אלה ה יודעים בעד מי היו רוצים להצביע](#) אינם יודעים עד ה רגע ה אחרון אם יטרחו להצביע.'
-generated:
-ה אשמה אינה ב ה_ שיטה או ב ה_ מדגם, אלא ב שתי עובדות : (1) אמריקאים אינם מתעניינים ביותר ב ה_ תהליך ה אלקטורלי, ו גם[אלה ה יודעים בעד מי היו רוצים להצביע](#ה יכולת לחזות תוצאות בחירות ב[ארצות ה ברית](#cluster_1) באמצעות סקרי דעת קהל עשויה להצטמצם ב ה_ שנים ה באות עד ל ה_ מינימום.
-
-"""
 
 
 def get_dataset_readers(args):
@@ -24,7 +18,6 @@ def get_dataset_readers(args):
         "doc_template": DocExampleDatasetReader,
         "qa_template": MentionExampleDatasetReader,
         "iterative_decoding_example": DocExampleIterativeDecodingDatasetReader,
-        "hebrew_reader": HebrewExampleDatasetReader,
     }
     gold_data = read_jsonl(args.eval_data)
     # TODO refactor with predicted mentions
@@ -35,410 +28,6 @@ def get_dataset_readers(args):
     )
 
     return dataset_reader
-
-
-class HebrewExampleDatasetReader:
-    def __init__(
-            self,
-            gold_data_path: str,
-            predicted_data_path: str,
-    ):
-        self.gold_data_path = gold_data_path
-        self.predicted_data_path = predicted_data_path
-        self.split_data = None  # fill in later in .split
-
-    def _get_positions(self, text):
-        """Get the positions of entities in the text
-        Eg. text="on [a cross-sea bridge connecting [[Hong Kong](#hk), [Zhuhai](#zhuhai),
-        and [Macao](#macao)](#bridge)]"
-        start_token=#, end_token=)
-        Returns [(48,50), (62,68),...] (representation = [("hk", "zhuhai",...)])
-        TODO: the "start_token", "end_token" business should be refactored
-        """
-        mentions = []
-        text = text.strip()
-
-        # first get the "start_token" and "end_token"
-        start_token, end_token = (
-            "\(#",  # "\(#" to avoid matching hashtags in the text itself
-            ")",
-        )
-
-        # then find positions
-        for m in re.finditer(start_token, text):
-
-            start_idx = m.start()
-            end_idx = text.find(end_token, start_idx)
-            mentions.append((start_idx, end_idx))
-
-        return mentions
-
-    def _get_mentions(self, text):
-        """Get the (mention, entityID pair) of entities in the text
-        Eg. text="on [a cross-sea bridge connecting [[Hong Kong](#hk), [Zhuhai](#zhuhai),
-        and [Macao](#macao)](#bridge)]"
-        start_token=#
-        end_token=)
-        Returns [("[Hong Kong]", "hk"), ("[Zhuhai]", "zhuhai"),...]
-        NOTE that this does not work entirely with nested mentions, but well enough
-        for our purposes. Also this is a bit different from _get_positions. This
-        whole parse_results business is convoluted, so most likely will need 2-3
-        days of refactoring later
-        """
-        mentions = []
-        text = text.strip()
-        # the three variables below are specific to this prompt template
-        identifier, start_m, end_id, align_idx = "#", "[", ")", 1
-        for m in re.finditer(identifier, text):
-
-            # get entity and mention
-            start_id_idx = m.start()
-            end_id_idx = text.find(end_id, start_id_idx)
-            entity = text[start_id_idx + align_idx : end_id_idx]
-            start_m_idx = text.rfind(start_m, 0, start_id_idx)
-            mention = text[start_m_idx:start_id_idx]
-
-            # we must replace all the entities in the mention with blank
-            for prev_m, prev_e in mentions[::-1]:
-                if (
-                    "#{0}".format(prev_e) in mention
-                    or "href={0}".format(prev_e) in mention
-                ):
-                    mention = mention.replace(prev_e, "")
-
-            # finally we can add
-            mentions.append((mention, entity))
-
-        return mentions
-
-    def _get_output_priming(self, input_context_str: str) -> str:
-        """
-        Generate the output priming string for the given input context string.
-        i.e. For a prompt like "Annotate all entity mentions in the following text with coreference clusters."
-        It would return the beginning of the text with the first mention annotated with a cluster ID.
-
-        :param input_context_str: The input context string containing mentions.
-        :return: The output priming string with the first mention annotated with a cluster ID.
-        """
-        first_hashtag = input_context_str.find("#")
-        second_hashtag = input_context_str.find("#", first_hashtag + 1)
-        output_priming = "{0}#cluster_0{1}".format(
-            input_context_str[:first_hashtag],
-            input_context_str[first_hashtag + 1 : second_hashtag + 1],
-        )
-        return output_priming
-
-    def parse_coref(self, coref):
-        """Parse coreference annotation and return lists of starting and ending mentions."""
-        if coref == '_' or coref == '-':
-            return [], []
-        starts = []
-        ends = []
-        parts = coref.split('|')
-        for part in parts:
-            part = part.strip()
-            if re.match(r'^\(\d+\)$', part):
-                # Single token mention
-                mention_id = part[1:-1]
-                starts.append(mention_id)
-                ends.append(mention_id)
-            elif re.match(r'^\(\d+$', part):
-                # Start of a mention
-                mention_id = part[1:]
-                starts.append(mention_id)
-            elif re.match(r'^\d+\)$', part):
-                # End of a mention
-                mention_id = part[:-1]
-                ends.append(mention_id)
-            else:
-                # Handling complex cases like '6|(7'
-                if '(' in part and ')' in part:
-                    # Single token mention with multiple IDs
-                    ids = re.findall(r'\d+', part)
-                    for mention_id in ids:
-                        starts.append(mention_id)
-                        ends.append(mention_id)
-                elif '(' in part:
-                    ids = re.findall(r'\d+', part)
-                    for mention_id in ids:
-                        starts.append(mention_id)
-                elif ')' in part:
-                    ids = re.findall(r'\d+', part)
-                    for mention_id in ids:
-                        ends.append(mention_id)
-        return starts, ends
-
-    def process_conll_file(self, file_path):
-        open_mentions = []
-        output_tokens = []
-        original_text = ""
-        with open(file_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith("#") or line == '':
-                    continue  # Skip comments and empty lines
-                cols = line.split()
-                if len(cols) < 5:
-                    continue  # Skip lines that don't have enough columns
-                original_text += cols[0] + " "
-                word = cols[0]
-                coref = cols[-1]  # Coreference annotations in the last column
-
-                starts, ends = self.parse_coref(coref)
-
-                # Begin mentions
-                for mention_id in starts:
-                    output_tokens.append('[')
-                    open_mentions.append(mention_id)
-
-                output_tokens.append(word)
-
-                # End mentions
-                for mention_id in ends:
-                    if mention_id in open_mentions:
-                        open_mentions.remove(mention_id)
-                        output_tokens.append('](#)')
-                    else:
-                        # The mention was not open, but we need to close it
-                        output_tokens.append('](#)')
-
-        # Close any remaining open mentions
-        while open_mentions:
-            output_tokens.append('](#)')
-            open_mentions.pop()
-
-        # Join tokens to reconstruct the text
-        markdown_text = ' '.join(output_tokens)
-
-        # Cleanup spaces before punctuation (optional)
-        # Remove spaces between brackets and words
-        markdown_text = re.sub(r'\s+\[', r'[', markdown_text)  # Remove space before '['
-        markdown_text = re.sub(r'\[\s+', r'[', markdown_text)  # Remove space before '['
-        markdown_text = re.sub(r'\s+]\(#\)', r'](#)', markdown_text)  # Remove space after '](#)'
-
-        # Cleanup spaces before punctuation (if needed)
-        # Note: Adjust this regex for Hebrew punctuation if necessary
-        original_text = self.fix_punct(original_text)
-        markdown_text = self.fix_punct(markdown_text)
-        return original_text, markdown_text
-
-    def fix_punct(self, text):
-        text = re.sub(r'\s+([.,;!?%$)])', r'\1', text)
-        text = re.sub(r'\(\s*(.*?)\s*\)', lambda m: f"({m.group(1).strip()})", text)
-        text = re.sub(r'"\s+', '"', re.sub(r'\(\s*(.*?)\s*\)', lambda m: f"({m.group(1).strip()})", text))
-        text = re.sub(r'(?<![.,])\s+"(?!\s*\w)', '"',
-                      re.sub(r'"\s+', '"', re.sub(r'\(\s*(.*?)\s*\)', lambda m: f"({m.group(1).strip()})", text)))
-        return text
-
-    def extract_clusters(self, file_path):
-        clusters = {}
-        open_mentions = {}  # mention_id -> start_index
-        token_index = 0  # index of the current token
-        with open(file_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line == '' or line.startswith('#'):
-                    continue
-                cols = line.strip().split()
-                if len(cols) < 5:
-                    continue
-                token = cols[0]
-                coref = cols[-1]  # last column is coref annotation
-
-                starts, ends = self.parse_coref(coref)
-
-                for mention_id in starts:
-                    open_mentions[mention_id] = token_index
-
-                for mention_id in ends:
-                    if mention_id in open_mentions:
-                        start_index = open_mentions[mention_id]
-                        end_index = token_index
-
-                        if mention_id not in clusters:
-                            clusters[mention_id] = []
-                        clusters[mention_id].append([start_index, end_index])
-
-                        del open_mentions[mention_id]
-                    else:
-                        # Handle singleton mentions that start and end at the same token
-                        start_index = token_index
-                        end_index = token_index
-
-                        if mention_id not in clusters:
-                            clusters[mention_id] = []
-                        clusters[mention_id].append([start_index, end_index])
-
-                token_index += 1
-
-        # Convert clusters from dict to list of lists
-        output_clusters = []
-        for cluster_id in sorted(clusters.keys(), key=int):
-            cluster = clusters[cluster_id]
-            output_clusters.append(cluster)
-
-        return output_clusters
-
-    def split(self) -> List[dict]:
-        split_data = []
-
-        for predicted_file in os.listdir(self.predicted_data_path):
-            doc_id = Path(predicted_file).name
-            gold_path = os.path.join(self.gold_data_path, doc_id)
-            eval_path = os.path.join(self.predicted_data_path, doc_id)
-            original_text, markdown_text_predicted_mention = self.process_conll_file(eval_path)
-            _, markdown_text_gold_mention = self.process_conll_file(gold_path)
-            gold_clusters = self.extract_clusters(gold_path)
-            predicted_mentions = self._extract_mentions_from_clusters(self.extract_clusters(eval_path)) # TODO: change to predicted clusters
-            gold_mentions = self._extract_mentions_from_clusters(self.extract_clusters(gold_path))
-            split_data.append(
-                {
-                    "example_key": doc_id,
-                    "doc_key": doc_id,
-                    "original_context_str": original_text,
-                    "input_text": markdown_text_predicted_mention,
-                    "input_context_str": markdown_text_predicted_mention, # I would use this to create the prompt, it is based on the mention given
-                    "output_priming": self._get_output_priming(markdown_text_predicted_mention),
-                    "output_text": markdown_text_gold_mention,
-                    "predicted_mentions": predicted_mentions, #it is actually other way around with predicted_mentions and predicted_mentions
-                    "gold_mentions": gold_mentions,
-                    "gold_clusters": gold_clusters,
-                }
-            )
-        self.split_data = split_data
-        return split_data
-
-    def aggregate(self, generations: dict) -> List[dict]:
-        """Aggregate generations into predicted clusters"""
-        doc_data = []
-        for example in self.split_data:
-
-            # try:
-            doc_key = example["doc_key"]
-            generated_text = "{0}{1}".format(
-                example["output_priming"],
-                generations[doc_key]["generated_text"],
-            ).strip()
-            # generated_text = generations[doc_key]["generated_text"].strip()
-            input_text = example["input_context_str"].strip()
-            generated_positions = self._get_positions(generated_text)
-            input_positions = self._get_positions(input_text)
-            if len(input_positions) != len(example["predicted_mentions"]):
-                print(
-                    f"Mismatch in lengths: \n"
-                    f"input_positions={len(input_positions)}, \n"
-                    f"predicted_mentions={len(example['predicted_mentions'])}")
-
-            # aligned: case where LM produces all mentions
-
-            if (
-                len(generated_positions)
-                == len(input_positions)
-                == len(example["predicted_mentions"])
-            ):
-                predicted_clusters_dict = defaultdict(list)
-                for i, m in enumerate(example["predicted_mentions"]):
-
-                    e_start, e_end = generated_positions[i]
-                    predicted_clusterID = generated_text[e_start:e_end]
-                    predicted_clusters_dict[predicted_clusterID].append(m)
-
-                predicted_clusters = [c for _, c in predicted_clusters_dict.items()]
-            # misaligned: cases where LM does not produce all mentions
-            else:
-                predicted_clusters = self._extract_clusters_from_unaligned_texts(
-                    generated_text, input_text, example
-                )
-            if predicted_clusters is not None:
-                doc_data.append(
-                    {
-                        "doc_key": doc_key,
-                        "predicted_clusters": predicted_clusters,
-                        "gold_clusters": example["gold_clusters"],
-                    }
-                )
-        print(
-            "Process {0} out of {1} docs ({2:0.2f}%)".format(
-                len(doc_data),
-                len(self.split_data),
-                100 * len(doc_data) / len(self.split_data),
-            )
-        )
-        return doc_data
-
-    def _extract_clusters_from_unaligned_texts(
-        self, generated_text, input_text, dev_example
-    ):
-
-        doc_key = dev_example["doc_key"]
-
-        # first split generated_text and input_text into sentences
-        if "\n" in generated_text:
-            newline_idx = generated_text.find("\n")
-            generated_text = generated_text[:newline_idx]
-        # generated_sents = tokenize.sent_tokenize(generated_text, "hebrew")
-        generated_sents = tokenize.sent_tokenize(generated_text)
-        input_sents = tokenize.sent_tokenize(input_text)
-        if len(generated_sents) != len(input_sents):
-            print("generated text: ", len(generated_sents))
-            print("input sents: ", len(input_sents))
-            print(f"doc key: {doc_key}")
-        assert len(generated_sents) == len(input_sents)
-        try:
-            input_mentions, generated_entities = [], []
-            for generated_sent, input_sent in zip(generated_sents, input_sents):
-                generated_sent = generated_sent.strip()
-                input_sent = input_sent.strip()
-
-                # here we can get the predictions more easily
-                sent_generated_entities = self._get_mentions(generated_sent)
-                sent_input_mentions = self._get_mentions(input_sent)
-
-                new_sent_generated_entities = []
-                e_counter = 0
-                for (input_m, _) in sent_input_mentions:
-                    if e_counter < len(sent_generated_entities):
-                        generated_m, generated_e = sent_generated_entities[e_counter]
-                    else:
-                        generated_m, generated_e = "", ""
-                    if input_m == generated_m:
-                        new_sent_generated_entities.append((generated_m, generated_e))
-                        e_counter += 1
-                    else:
-                        new_sent_generated_entities.append((input_m, ""))
-                input_mentions += sent_input_mentions
-                generated_entities += new_sent_generated_entities
-
-            if (
-                len(input_mentions)
-                != len(dev_example["predicted_mentions"])
-                != len(generated_entities)
-            ):
-                # print("Wrong position generation of doc_key={0}".format(doc_key))
-                return None
-            assert (
-                len(input_mentions)
-                == len(dev_example["predicted_mentions"])
-                == len(generated_entities)
-            )
-            predicted_clusters_dict = defaultdict(list)
-            for i, m in enumerate(dev_example["predicted_mentions"]):
-
-                predicted_clusterID = generated_entities[i][1]
-                if predicted_clusterID != "":
-                    predicted_clusters_dict[predicted_clusterID].append(m)
-            doc_predicted_clusters = [c for _, c in predicted_clusters_dict.items()]
-            return doc_predicted_clusters
-        except:
-            return None
-
-    def _extract_mentions_from_clusters(self, gold_clusters):
-        mentions = []
-        for cluster in gold_clusters:
-            for mention in cluster:
-                mentions.append(mention)
-        return mentions
-
 
 
 class DocExampleIterativeDecodingDatasetReader:
@@ -658,16 +247,6 @@ class DocExampleIterativeDecodingDatasetReader:
 
         return prompt
 
-    def extract_mentions(self, doc_clusters):
-        mentions = []
-        seen = set()
-        for cluster in doc_clusters:
-            for mention in cluster:
-                if mention not in seen:
-                    mentions.append(mention)
-                    seen.add(mention)
-        return mentions
-
     def split(self) -> List[dict]:
         split_data = []
         gold_i = 0
@@ -679,9 +258,15 @@ class DocExampleIterativeDecodingDatasetReader:
             assert predicted_doc["doc_key"] == gold_doc["doc_key"]
 
             # get predicted and gold mentions
-            predicted_mentions = self.extract_mentions(predicted_doc["clusters"])
-            gold_mentions = self.extract_mentions(gold_doc["clusters"])
-
+            predicted_mentions, gold_mentions = [], []
+            for mentions, clusters in (
+                [predicted_mentions, predicted_doc["clusters"]],
+                [gold_mentions, gold_doc["clusters"]],
+            ):
+                for cluster in clusters:
+                    for m in cluster:
+                        if m not in mentions:
+                            mentions.append(m)
             predicted_mentions = self._special_sort(predicted_mentions)
             gold_mentions = self._special_sort(gold_mentions)
 
