@@ -279,6 +279,34 @@ class HebrewExampleDatasetReader:
 
         return output_clusters
 
+    def split_raw_text(self) -> List[dict]:
+        split_data = []
+
+        for predicted_file in os.listdir(self.predicted_data_path):
+            doc_id = Path(predicted_file).name
+            doc_id_for_gold  = f"htb:{doc_id.replace('txt', 'conllu')}"
+            gold_path = os.path.join(self.gold_data_path, doc_id_for_gold)
+            eval_path = os.path.join(self.predicted_data_path, doc_id)
+            original_text, markdown_text_gold_mention = self.process_conll_file(gold_path)
+            gold_clusters = self.extract_clusters(gold_path)
+            input_context_str = self._read_raw_text(eval_path)
+            gold_mentions = self._extract_mentions_from_clusters(self.extract_clusters(gold_path))
+            split_data.append(
+                {
+                    "example_key": doc_id,
+                    "doc_key": doc_id,
+                    "input_context_str": input_context_str,
+                    "original_context_str": original_text,
+                    "output_text": markdown_text_gold_mention,
+                    "gold_mentions": gold_mentions,
+                    "gold_clusters": gold_clusters,
+                    "output_priming": "", # Just for compatability with rest of teh flow
+                }
+            )
+        self.split_data = split_data
+        return split_data
+
+
     def split(self) -> List[dict]:
         split_data = []
 
@@ -439,7 +467,10 @@ class HebrewExampleDatasetReader:
                 mentions.append(mention)
         return mentions
 
-
+    def _read_raw_text(self, path):
+        with open(path, "r", encoding='utf-8') as f:
+            raw_text = f.read()
+        return raw_text
 
 class DocExampleIterativeDecodingDatasetReader:
     """Dataset reader for doc-based examples, ITERATIVE DECODING VERSION. Inputs are either gold data

@@ -35,7 +35,7 @@ def write_json(d: dict, filepath: str, encoding="utf-8") -> None:
 
 def read_jsonl(filepath: str, encoding: str = "utf-8") -> List[dict]:
     data = []
-    with open(filepath, "r") as f:
+    with open(filepath, "r", encoding=encoding) as f:
         for line in f.readlines():
             example = json.loads(line)
             data.append(example)

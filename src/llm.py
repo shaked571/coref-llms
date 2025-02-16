@@ -5,7 +5,27 @@ import time
 import openai
 import tiktoken
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+import requests
+import base64
+from dataclasses import dataclass
+import json
+import time
+from datetime import datetime
+from typing import Union
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
+import pandas as pd
+from tqdm import tqdm
+
+from tenacity import (
+    retry,
+    stop_after_attempt,
+    wait_random_exponential,
+)  # for exponential backoff
+
+from Crypto.PublicKey import RSA
+from Crypto.Signature import PKCS1_v1_5
+from Crypto.Hash import SHA256
 # from peft import PeftModel, PeftConfig
 
 from utils.io_utils import *
@@ -16,9 +36,15 @@ def get_generations(prompts: dict, exp_dir: str, model_id: str) -> dict:
     # run generation
     generation_filepath = os.path.join(exp_dir, "generations.json")
     model = MODEL_TYPE[model_id](model_id)
+    if os.path.exists(generation_filepath):  #
+        generations = read_json(generation_filepath)
+    else:
+        generations = dict()
+    missing_prompts = {e_key: prompt for e_key, prompt in prompts.items() if e_key not in generations}
+    print(f"Number of missing prompts: {len(missing_prompts)}")
     if isinstance(model, OpenAIModel):
-        model.compute_cost(prompts)
-    generations = model.inference(prompts, generation_filepath)
+        model.compute_cost(missing_prompts)
+    generations = model.inference(missing_prompts, generation_filepath)
 
     return generations
 
@@ -106,7 +132,7 @@ class OpenAIModel:
     # per-token pricing https://openai.com/api/pricing/ snapshot on 11/09/2023
     MODEL_INFO = {
         "gpt-4": {
-            "max_context_len": 8000,
+            "max_context_len": 8100,
             "input_cost": 0.00003,  # $0.03 per 1K tokens
             "output_cost": 0.00006,  # $0.06 per 1K tokens
         },
@@ -114,6 +140,11 @@ class OpenAIModel:
             "max_context_len": 32000,
             "input_cost": 0.00006,  # $0.06 per 1K tokens
             "output_cost": 0.00012,  # $0.12 per 1K tokens
+        },
+        "gpt-4o": { # TODO - currently not working - need to approve it under pk_stage
+            "max_context_len": 32000,
+            "input_cost": 0.0000025,
+            "output_cost": 0.00001,
         },
         "gpt-3.5-turbo": {
             "max_context_len": 4000,
@@ -139,59 +170,85 @@ class OpenAIModel:
         self.model_info = OpenAIModel.MODEL_INFO[model_name]
         self.max_context_len = self.model_info["max_context_len"]
 
-    def inference(self, prompts: dict, generation_filepath: str) -> dict:
+    def create_payload(self, messages , model, temperature, max_tokens):
+        return {
+            "model": model,
+            "task": "chat/completions",
+            "model-params": {
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+        }
 
-        openai.api_key = os.environ["OPENAI_API_KEY"]
+    def get_headers(self):
+        key_version = 1
+        consumer_id = "e6a8f4da-9070-46e1-8aa0-f1c33cd094ee"
+        env = "stage"
+        with open('pk_stage', 'r') as file:
+            pvt_key_base64 = file.read()
 
+        rsa_pem = base64.b64decode(pvt_key_base64)
+        timestamp = int(time.time()) * 1000
+        data = f"{consumer_id}\n{timestamp}\n{key_version}\n"
+        rsakey = RSA.importKey(rsa_pem)
+        signer = PKCS1_v1_5.new(rsakey)
+        digest = SHA256.new()
+        digest.update(data.encode('utf-8'))
+        sign = signer.sign(digest)
+
+        s, ts = base64.b64encode(sign).decode("utf-8"), str(timestamp)
+        return {
+            "WM_CONSUMER.ID": consumer_id,
+            "WM_SVC.NAME": "WMTLLMGATEWAY",
+            "WM_SVC.ENV": env,
+            "WM_SEC.KEY_VERSION": str(key_version),
+            "WM_SEC.AUTH_SIGNATURE": s,
+            "WM_CONSUMER.INTIMESTAMP": ts,
+            "Content-Type": "application/json"
+        }
+
+    @retry(wait=wait_random_exponential(min=0.3, max=2), stop=stop_after_attempt(2))
+    def completion_with_backoff(
+            self,
+            messages,
+            temperature,
+            max_tokens,
+            model="gpt-4",
+
+    ):
+        url = "https://wmtllmgateway.stage.walmart.com/wmtllmgateway/v1/openai"
+        payload = self.create_payload(messages=messages,
+                                 model=model,
+                                 temperature=temperature,
+                                 max_tokens=max_tokens,
+                                 )
+        response = requests.request("POST", url, headers=self.get_headers(), json=payload, verify=False)
+        return response
+
+    def inference(self, missing_prompts: dict, generation_filepath: str) -> dict:
         # resume generation if exist
-        generations = dict()
-        if os.path.exists(generation_filepath):
+        if os.path.exists(generation_filepath):  #
             generations = read_json(generation_filepath)
+        else:
+            generations = dict()
+        with ThreadPoolExecutor() as executor:
+            futures = {
+                executor.submit(self.generate_text, e_key, prompt): e_key
+                for e_key, prompt in missing_prompts.items()
+            }
 
-        for e_key, prompt in prompts.items():
-
-            if e_key not in generations:
-
+            for future in tqdm(as_completed(futures), total=len(futures)):
+                e_key = futures[future]
                 try:
-                    max_generated_len = self.max_context_len - len(
-                        self.tokenizer.encode(prompt)
-                    )
-
-                    if self.model_name in ["gpt-3.5-turbo-instruct"]:
-                        completion = openai.Completion.create(
-                            engine=self.model_name,
-                            prompt=prompt,
-                            max_tokens=max_generated_len,
-                            temperature=0,
-                        )
-                        output_text = completion.choices[0].text
-                    else:
-                        completion = openai.ChatCompletion.create(
-                            model=self.model_name,
-                            messages=[
-                                {
-                                    "role": "assistant",
-                                    "content": prompt,
-                                },
-                            ],
-                            max_tokens=max_generated_len,
-                            temperature=0,
-                        )
-                        output_text = completion.choices[0].message["content"]
-                    print("Finished Prompt: {0}{1}".format(prompt, output_text))
-                    generations[e_key] = {
-                        "prompt": prompt,
-                        "generated_text": output_text,
-                    }
-                    write_json(generations, generation_filepath)
-
-                    if "gpt-4" in self.model_name:
-                        time.sleep(60)
-
-                except:
+                    result = future.result()
+                    if result["generated_text"] != "":
+                        generations[e_key] = result
+                        write_json(generations, generation_filepath)
+                except Exception as e:
+                    print(e)
                     print("Cannot generate text for example={0}".format(e_key))
-
-        write_json(generations, generation_filepath)
+                write_json(generations, generation_filepath)
         return generations
 
     def compute_cost(self, prompts: dict):
@@ -211,6 +268,40 @@ class OpenAIModel:
 
         # output the cost
         print(f"Estimated cost for {self.model_name}: ${estimated_cost:0.2f}")
+
+    def generate_text(self, e_key, prompt):
+        max_generated_len = self.max_context_len - len(self.tokenizer.encode(prompt))
+        temperature = 0.1
+        try:
+            completion = self.completion_with_backoff(
+                model=self.model_name,
+                messages=[
+                    {
+                        "role": "assistant",
+                        "content": prompt,
+                    },
+                ],
+                max_tokens=max_generated_len,
+                temperature=temperature,
+            )
+
+        except Exception as e:
+            print(f"Retrying due to error: {e}")
+            temperature += 0.01
+
+        if completion.status_code != 200:
+            print(f"Completion status code: {completion.status_code}")
+            print(f"Failed to generate text for example={e_key}")
+            return {
+                "prompt": prompt,
+                "generated_text": "",
+            }
+        output_text = json.loads(completion.text)['choices'][0]['message']["content"]
+        print("Finished Prompt: {0}{1}".format(prompt, output_text))
+        return {
+            "prompt": prompt,
+            "generated_text": output_text,
+        }
 
 
 class AzureModel:
@@ -318,5 +409,26 @@ MODEL_TYPE = {
     "gpt-3.5-turbo-16k": OpenAIModel,
     "gpt-3.5-turbo-instruct": OpenAIModel,
     "gpt-4": OpenAIModel,
+    "gpt-4o": OpenAIModel,
     "gpt-4-32k": OpenAIModel,
 }
+
+if __name__ == '__main__':
+    model_name = "gpt-4"
+    model = OpenAIModel(model_name)
+    with open("prompt_temp", encoding='utf-8', mode='r') as file:
+        prompt = "\n".join(file.readlines())
+    #Annotate all entity mentions in the following text with coreference clusters. Use Markdown tags to indicate clusters in the output, with the following format [mention](#cluster_name)\n\nInput: [Tom](#) and [Mary](#) go to [the park](#). [It](#) was full of trees.\nOutput:"
+    max_generated_len = 8000- len(model.tokenizer.encode(prompt))
+    completion = model.completion_with_backoff(
+        model=model.model_name,
+        messages=[
+            {
+                "role": "assistant",
+                "content": prompt,
+            },
+        ],
+        max_tokens=max_generated_len,
+        temperature=0.1,
+    )
+    output_text = json.loads(completion.text)['choices'][0]['message']["content"]
