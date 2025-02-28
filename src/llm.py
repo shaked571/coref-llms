@@ -182,9 +182,12 @@ class OpenAIModel:
         }
 
     def get_headers(self):
+        # key_version = 2
         key_version = 1
         consumer_id = "e6a8f4da-9070-46e1-8aa0-f1c33cd094ee"
+        # consumer_id = "262363a8-70c5-4fd6-ac4e-083a301db22d"
         env = "stage"
+        # with open('pk_llama_non_prod', 'r') as file:
         with open('pk_stage', 'r') as file:
             pvt_key_base64 = file.read()
 
@@ -208,7 +211,7 @@ class OpenAIModel:
             "Content-Type": "application/json"
         }
 
-    @retry(wait=wait_random_exponential(min=0.3, max=2), stop=stop_after_attempt(2))
+    # @retry(wait=wait_random_exponential(min=0.3, max=2), stop=stop_after_attempt(2))
     def completion_with_backoff(
             self,
             messages,
@@ -219,7 +222,7 @@ class OpenAIModel:
     ):
         url = "https://wmtllmgateway.stage.walmart.com/wmtllmgateway/v1/openai"
         payload = self.create_payload(messages=messages,
-                                 model=model,
+                                 model="gpt-4",
                                  temperature=temperature,
                                  max_tokens=max_tokens,
                                  )
@@ -232,7 +235,7 @@ class OpenAIModel:
             generations = read_json(generation_filepath)
         else:
             generations = dict()
-        with ThreadPoolExecutor() as executor:
+        with ThreadPoolExecutor(max_workers=max(min(len(missing_prompts), (os.cpu_count() or 1)),1))  as executor:
             futures = {
                 executor.submit(self.generate_text, e_key, prompt): e_key
                 for e_key, prompt in missing_prompts.items()
@@ -272,22 +275,18 @@ class OpenAIModel:
     def generate_text(self, e_key, prompt):
         max_generated_len = self.max_context_len - len(self.tokenizer.encode(prompt))
         temperature = 0.1
-        try:
-            completion = self.completion_with_backoff(
-                model=self.model_name,
-                messages=[
-                    {
-                        "role": "assistant",
-                        "content": prompt,
-                    },
-                ],
-                max_tokens=max_generated_len,
-                temperature=temperature,
-            )
+        completion = self.completion_with_backoff(
+            model=self.model_name,
+            messages=[
+                {
+                    "role": "assistant",
+                    "content": prompt,
+                },
+            ],
+            max_tokens=max_generated_len,
+            temperature=temperature,
+        )
 
-        except Exception as e:
-            print(f"Retrying due to error: {e}")
-            temperature += 0.01
 
         if completion.status_code != 200:
             print(f"Completion status code: {completion.status_code}")
