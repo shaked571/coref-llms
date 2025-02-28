@@ -71,8 +71,6 @@ def mention_template_heb(example: dict) -> str:
                "Input:\n"
                "כשהוא איבד את הכרתו.\n"
                "Output:\n"
-               "Tokenized - \n"
-               "######\n"
                "כש[הוא](#) איבד את [הכרה_ _של_ [_הוא]](#)(#)\n"
                "### Allow nested mentions\n"
                "### Mark both nested mentions and also inner nested mentions and every noun phrase which can be candidate\n"
@@ -121,16 +119,19 @@ def e2e_template(example: dict) ->str:
         "# Output:\n[הוא](#) איבד את [הכרה_ _של_ [_הוא]](#)(#)\n\n"
 
         "## The clusters would be marked in the following way:\n"
-        "# Input tokenized:\n[הוא](#) איבד את [הכרה_ _של_ [_הוא]](#)(#)\n"
+        "# Input:\n[הוא](#) איבד את [הכרה_ _של_ [_הוא]](#)(#)\n"
         "# Output:\n[הוא](#cluster_1) איבד את [הכרה_ _של_ [_הוא]](#cluster_1)(#cluster_2)\n\n"
-        "Examples:\n\n"
-        "# Input document:\nלידס עלתה למקום החמישי אחרי שניצחה אתמול בחוץ במשחק השלמה את מנצסטר סיטי 3 2. השערים ללידס: לי צפמאן (14), קארל שאט (42), גורדון סטראקאן (62). לסיטי: אשלי וורד (49 מ-11 מ), דייויד ווייט (65)"
-        ".\n# Output cluster document:\n"
-        "\n[לידס](#cluster_0) עלתה ל ה_ מקום ה חמישי אחרי ש ניצחה אתמול ב ה_ חוץ ב משחק השלמה את[מנצסטר סיטי](#cluster_1) 3 2.[[ה שערים ל[לידס](#cluster_0)](#) :[לי צפמאן (14), קארל שאט (42), גורדון סטראקאן (62)](#)]. ל[סיטי](#cluster_1) : אשלי וורד (49 מ - 11 מ), דייויד ווייט (65)."
-        "\n# Input document:\nהרבה החמצות ממצבים נוחים של יבנה, בגלל משחק הגנתי של טבריה שהזמינה התקפות. בין חלוצי יבנה, שהרבו להחמיץ, ניצל אנריקה ורון הזדמנות אחת בלבד, כדי להעניק לקבוצתו פרס של 3 נקודות בעד נצחון שהיתה ראויה לו. שפט אריה וולף, 1,000 צופים, ביבנה."
-        "# Output cluster document:\n"
-        "  הרבה החמצות מ מצבים נוחים של[יבנה](#cluster_0), בגלל משחק הגנתי של טבריה ש הזמינה התקפות. בין חלוצי[יבנה](#cluster_0), ש הרבו להחמיץ, ניצל[אנריקה ורון](#cluster_1) הזדמנות אחת בלבד, כדי להעניק ל[קבוצה _של_[_הוא](#cluster_1)](#cluster_0) פרס של 3 נקודות בעד[נצחון ש היתה ראויה ל[_הוא](#cluster_0)](#cluster_1). שפט אריה וולף, 1,000 צופים, ב יבנה.\n"
-
+      
+        "Examples:\n"
+        "# Input:\n"
+        "לידס עלתה למקום החמישי אחרי שניצחה אתמול בחוץ במשחק השלמה את מנצסטר סיטי 3 2. השערים ללידס: לי צפמאן (14), קארל שאט (42), גורדון סטראקאן (62). לסיטי: אשלי וורד (49 מ-11 מ), דייויד ווייט (65)"
+        ".\n# Output:\n"
+        "[לידס](#cluster_0) עלתה ל ה_ מקום ה חמישי אחרי ש ניצחה אתמול ב ה_ חוץ ב משחק השלמה את[מנצסטר סיטי](#cluster_1) 3 2.[[ה שערים ל[לידס](#cluster_0)](#) :[לי צפמאן (14), קארל שאט (42), גורדון סטראקאן (62)](#)]. ל[סיטי](#cluster_1) : אשלי וורד (49 מ - 11 מ), דייויד ווייט (65)."
+        "\n# Input:\n"
+        "הרבה החמצות ממצבים נוחים של יבנה, בגלל משחק הגנתי של טבריה שהזמינה התקפות. בין חלוצי יבנה, שהרבו להחמיץ, ניצל אנריקה ורון הזדמנות אחת בלבד, כדי להעניק לקבוצתו פרס של 3 נקודות בעד נצחון שהיתה ראויה לו. שפט אריה וולף, 1,000 צופים, ביבנה."
+        "\n# Output:\n"
+        "הרבה החמצות מ מצבים נוחים של[יבנה](#cluster_0), בגלל משחק הגנתי של טבריה ש הזמינה התקפות. בין חלוצי[יבנה](#cluster_0), ש הרבו להחמיץ, ניצל[אנריקה ורון](#cluster_1) הזדמנות אחת בלבד, כדי להעניק ל[קבוצה _של_[_הוא](#cluster_1)](#cluster_0) פרס של 3 נקודות בעד[נצחון ש היתה ראויה ל[_הוא](#cluster_0)](#cluster_1). שפט אריה וולף, 1,000 צופים, ב יבנה."
+        "\n"
         "### Allow nested mentions\n"
         "### Mark both nested mentions and also inner nested mentions and every noun phrase which can be candidate\n"
         "### Mark all spans as if it is Ontonotes 5.0 coreference dataset\n"
@@ -138,11 +139,8 @@ def e2e_template(example: dict) ->str:
         "### No need to output singleton in the final Output cluster document\n"
 
     )
-
     # add example itself
-    prompt += "Input: {0}\nOutput cluster document:\n".format(example["input_context_str"])
-
-
+    prompt += "#Input: {0}\n# Output:\n".format(example["input_raw_text"])
     return prompt
 
 def qa_template(example: dict) -> str:
