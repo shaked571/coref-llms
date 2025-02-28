@@ -9,13 +9,6 @@ import copy
 from transformers import AutoTokenizer
 
 from utils.io_utils import *
-"""
-input:
-'ה אשמה אינה ב ה_ שיטה או ב ה_ מדגם, אלא ב שתי עובדות : (1) אמריקאים אינם מתעניינים ביותר ב ה_ תהליך ה אלקטורלי, ו גם[אלה ה יודעים בעד מי היו רוצים להצביע](#) אינם יודעים עד ה רגע ה אחרון אם יטרחו להצביע.'
-generated:
-ה אשמה אינה ב ה_ שיטה או ב ה_ מדגם, אלא ב שתי עובדות : (1) אמריקאים אינם מתעניינים ביותר ב ה_ תהליך ה אלקטורלי, ו גם[אלה ה יודעים בעד מי היו רוצים להצביע](#ה יכולת לחזות תוצאות בחירות ב[ארצות ה ברית](#cluster_1) באמצעות סקרי דעת קהל עשויה להצטמצם ב ה_ שנים ה באות עד ל ה_ מינימום.
-
-"""
 
 
 def get_dataset_readers(args):
@@ -96,6 +89,9 @@ class HebrewExampleDatasetReader:
             end_id_idx = text.find(end_id, start_id_idx)
             entity = text[start_id_idx + align_idx : end_id_idx]
             start_m_idx = text.rfind(start_m, 0, start_id_idx)
+            start_m_idx += 1
+            start_id_idx -= 2
+
             mention = text[start_m_idx:start_id_idx]
 
             # we must replace all the entities in the mention with blank
@@ -289,18 +285,20 @@ class HebrewExampleDatasetReader:
             eval_path = os.path.join(self.predicted_data_path, doc_id)
             original_text, markdown_text_gold_mention = self.process_conll_file(gold_path)
             gold_clusters = self.extract_clusters(gold_path)
-            input_context_str = self._read_raw_text(eval_path)
+            input_raw_text = self._read_raw_text(eval_path)
             gold_mentions = self._extract_mentions_from_clusters(self.extract_clusters(gold_path))
             split_data.append(
                 {
                     "example_key": doc_id,
                     "doc_key": doc_id,
-                    "input_context_str": input_context_str,
+                    "input_context_str":  markdown_text_gold_mention, # Here we need input with mentions for the aggregation
+                    "input_raw_text": input_raw_text,
                     "original_context_str": original_text,
                     "output_text": markdown_text_gold_mention,
                     "gold_mentions": gold_mentions,
                     "gold_clusters": gold_clusters,
-                    "output_priming": "", # Just for compatability with rest of teh flow
+                    "output_priming": "", # Just for compatability with rest of the flow
+                    "predicted_mentions": gold_mentions # We need to supply
                 }
             )
         self.split_data = split_data
@@ -399,7 +397,7 @@ class HebrewExampleDatasetReader:
     ):
 
         doc_key = dev_example["doc_key"]
-
+        original_gen_text = generated_text
         # first split generated_text and input_text into sentences
         if "\n" in generated_text:
             newline_idx = generated_text.find("\n")
@@ -429,7 +427,7 @@ class HebrewExampleDatasetReader:
                         generated_m, generated_e = sent_generated_entities[e_counter]
                     else:
                         generated_m, generated_e = "", ""
-                    if input_m == generated_m:
+                    if self.normalize_mention(input_m) == self.normalize_mention(generated_m):
                         new_sent_generated_entities.append((generated_m, generated_e))
                         e_counter += 1
                     else:
@@ -459,6 +457,13 @@ class HebrewExampleDatasetReader:
             return doc_predicted_clusters
         except:
             return None
+
+    def normalize_mention(self, input_m):
+        pattern = r"\([^)]*#.*?\)"
+        cleaned_text = re.sub(pattern, "", input_m)
+        text = re.sub(r"[_\s\[\]]", "", cleaned_text)
+        text = text.replace("(#", "")
+        return text
 
     def _extract_mentions_from_clusters(self, gold_clusters):
         mentions = []
