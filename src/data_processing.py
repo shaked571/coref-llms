@@ -406,9 +406,21 @@ class HebrewExampleDatasetReader:
         generated_sents = tokenize.sent_tokenize(generated_text)
         input_sents = tokenize.sent_tokenize(input_text)
         if len(generated_sents) != len(input_sents):
-            print("generated text: ", len(generated_sents))
-            print("input sents: ", len(input_sents))
-            print(f"doc key: {doc_key}")
+            heuristic_fix_for_sent_sep = tokenize.sent_tokenize(input_text.replace(".", ". "))
+            if len(heuristic_fix_for_sent_sep) == len(input_sents):
+                generated_sents = heuristic_fix_for_sent_sep
+                print(f"Manage heuristic: {doc_key}")
+                print(f"Num of sentences in heuristic: {len(heuristic_fix_for_sent_sep)}")
+                print("input sents: ", len(input_sents))
+                print(f"doc key: {doc_key}")
+                print("-"*20)
+
+            else:
+                print("generated text: ", len(generated_sents))
+                print("input sents: ", len(input_sents))
+                print(f"doc key: {doc_key}")
+                print("-" * 20)
+
         assert len(generated_sents) == len(input_sents)
         try:
             input_mentions, generated_entities = [], []
