@@ -1,4 +1,5 @@
 import os
+from nltk import tokenize
 import torch
 import time
 
@@ -17,12 +18,6 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 from tqdm import tqdm
 
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_random_exponential,
-)  # for exponential backoff
-
 from Crypto.PublicKey import RSA
 from Crypto.Signature import PKCS1_v1_5
 from Crypto.Hash import SHA256
@@ -31,9 +26,9 @@ from Crypto.Hash import SHA256
 from utils.io_utils import *
 
 
-def get_generations(prompts: dict, exp_dir: str, model_id: str) -> dict:
-
+def get_generations(data, prompts: dict, exp_dir: str, model_id: str) -> dict:
     # run generation
+    data_by_doc = {d['doc_key']:d for d in data}
     generation_filepath = os.path.join(exp_dir, "generations.json")
     model = MODEL_TYPE[model_id](model_id)
     if os.path.exists(generation_filepath):  #
@@ -46,14 +41,59 @@ def get_generations(prompts: dict, exp_dir: str, model_id: str) -> dict:
         model.compute_cost(missing_prompts)
     generations = model.inference(missing_prompts, generation_filepath)
 
+    while True:
+        invalid_generations = {}
+
+        for g_key, gen in generations.items():
+            if not is_valid_gen(
+                    data_by_doc[g_key]["input_context_str"].strip(),
+                    g_key,
+                    generations,
+                    data_by_doc[g_key]["output_priming"]
+            ):
+                invalid_generations[g_key] = gen
+
+        if len(invalid_generations) == 0:
+            break  # Exit loop when all generations are valid
+
+        print(f"Retrying {len(invalid_generations)} invalid generations...")
+        print("The following generations failed:")
+        for g_key, gen in invalid_generations.items():
+            print(f"Failed: {g_key}")
+            generations.pop(g_key)
+        write_json(generations, generation_filepath)
+        new_generations = model.inference(
+            {g_key: gen["prompt"] for g_key, gen in invalid_generations.items()},
+            generation_filepath
+        )
+
+        generations = new_generations
+
     return generations
+
+
+
+def is_valid_gen(input_text: str, g_key: str, generations: dict, output_priming: str) -> bool:
+    generations[g_key]["generated_text"] = generations[g_key]["generated_text"].strip().strip("</s>").strip("<s>")
+    generated_text = "{0}{1}".format(
+        output_priming,
+        generations[g_key]["generated_text"],
+    ).strip()
+    generated_sents = tokenize.sent_tokenize(generated_text)
+    input_sents = tokenize.sent_tokenize(input_text)
+    if len(generated_sents) != len(input_sents):
+        heuristic_fix_for_sent_sep = tokenize.sent_tokenize(input_text.replace(".", ". "))
+        return len(heuristic_fix_for_sent_sep) == len(input_sents)
+    return len(generated_sents) == len(input_sents)
+
+
 
 
 class HFModels:
     """Wrapper for HuggingFace Models (e.g. Llama)"""
 
     def __init__(
-        self, model_name: str, max_generated_len: int, max_context_len: int = 2048
+        self, model_name: str
     ) -> None:
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -71,41 +111,47 @@ class HFModels:
         )
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            # device_map=device,
+            # quantization_config=bnb_config,
             device_map="auto",
-            # torch_dtype=torch.float16,
-            load_in_8bit=True,
-            rope_scaling={"type": "dynamic", "factor": 2},
-            quantization_config=bnb_config,
+            torch_dtype=torch.bfloat16,
         )
         self.model.config.pad_token_id = self.model.config.eos_token_id
-        self.max_generated_len = max_generated_len  # TODO: this is obsolete
-        self.max_context_len = max_context_len
+        self.max_context_len = self.model.config.max_position_embeddings
+
+    def build_prompt_messages(self, prompt):
+        messages = [
+            {"role": "user", "content": prompt},
+        ]
+        return messages
+
 
     def inference(self, prompts: dict, generation_filepath: str) -> dict:
-
+        temperature = 0.1
         # resume generation if exist
         generations = dict()
         if os.path.exists(generation_filepath):
             generations = read_json(generation_filepath)
 
-        for e_key, prompt in prompts.items():
+        for e_key, prompt in tqdm(prompts.items()):
 
             if e_key not in generations:
 
-                # try:
-                input_ids = self.tokenizer.encode(prompt, return_tensors="pt").cuda()
+                # messages = self.build_prompt_messages(prompt)
+                # encoded = self.tokenizer.apply_chat_template(messages, return_tensors="pt").to(self.model.device)
+                encoded = self.tokenizer.encode(prompt, return_tensors="pt").to(self.model.device)
 
                 outputs = self.model.generate(
-                    input_ids,
-                    max_new_tokens=self.max_context_len - input_ids.shape[1],
-                    # temperature=0.9,
-                    do_sample=False,  # greedy decoding
+                    encoded,
+                    max_new_tokens=min(self.max_context_len, encoded.shape[1] * 2),
+                    temperature=temperature,
+                    do_sample=True, # greedy decoding
                     return_dict_in_generate=True,
                     output_scores=True,
-                    eos_token_id=13,
+                    max_time=60*5, # 5 minutes
+                    # eos_token_id=13,
+                    use_cache=False
                 )
-                input_len = input_ids.shape[1]
+                input_len = encoded.shape[1]
                 # generated tokens
                 generated_tokens = outputs.sequences[0, input_len:-1].tolist()
                 # generated_tokens = outputs.sequences[0].tolist()
@@ -113,14 +159,12 @@ class HFModels:
                 try:  # because of some annoying encoding bug
                     print("Finished Prompt: {0}{1}".format(prompt, generated_text))
                 except:
-                    continue
+                    print("Cannot generate text for example={0}".format(e_key))
                 generations[e_key] = {
                     "prompt": prompt,
                     "generated_text": generated_text,
                 }
                 write_json(generations, generation_filepath)
-                # except:
-                # print("Cannot generate text for example={0}".format(example_key))
 
         write_json(generations, generation_filepath)
         return generations
@@ -404,6 +448,7 @@ MODEL_TYPE = {
     "llama": HFModels,
     "llama-2": HFModels,
     "codellama": HFModels,
+    "dicta-il/dictalm2.0-instruct": HFModels,
     "gpt-3.5-turbo": OpenAIModel,
     "gpt-3.5-turbo-16k": OpenAIModel,
     "gpt-3.5-turbo-instruct": OpenAIModel,
