@@ -17,46 +17,61 @@ def hebrew_coref():
        The mentioned produced using the script in: HebNpChunker/make_paper_mentions_for_llm.py
        The files of conllu_gold are the gold mentions (Can use the one "with singletons" to get all the mentions or without to do an easier version).
 
-       In order to run gpt on "real life" mentions, you need to run the following command:
-       --exp_dir ../results/dev_heb
-       --gold_data /Users/s0g0a87/studies/coref-llms/data_coref/hebrew/conllu_gold/no_singleton/dev
-       --eval_data /Users/s0g0a87/studies/coref-llms/data_coref/hebrew/mentions_by_model/dev
-        --model_id gpt-4 --prompt_template doc_template
+       In order to run gpt on "real life" mentions, you need to run the following command - gpt based:
+       --exp_dir ../results/heb/gpt/dev/md_mentions
+       --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
+       --eval_data ../data_coref/hebrew/mentions_by_model/dev
+        --model_id gpt-4
+        --prompt_template doc_template
+
+       In order to run gpt on "real life" mentions, you need to run the following command - dicta based:
+       --exp_dir ../results/heb/dicta/dev/md_mentions
+       --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
+       --eval_data ../data_coref/hebrew/mentions_by_model/dev
+        --model_id dicta-il/dictalm2.0-instruct
+        --prompt_template doc_template
 
         In order to run gpt on gold mentions, you need to run the following command:
-        --exp_dir  ../results/dev_heb_on_gold
-        --gold_data /Users/s0g0a87/studies/coref-llms/data_coref/hebrew/conllu_gold/no_singleton/dev
-        --eval_data /Users/s0g0a87/studies/coref-llms/data_coref/hebrew/conllu_gold/no_singleton/dev
+        --exp_dir  ../results/heb/gpt/dev/gold_mention
+        --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
+        --eval_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
         --model_id gpt-4
+        --prompt_template doc_template
+
+        In order to run gpt on gold mentions, you need to run the following command - dicta based:
+        --exp_dir  ../results/heb/dicta/dev/gold_mention
+        --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
+        --eval_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
+        --model_id dicta-il/dictalm2.0-instruct
         --prompt_template doc_template
 
         For running e2e on raw text we first produce prediction using train data:
             1. Run the following command to create some reference for teh prompt (need to be done one time):
                 --exp_dir ../results/e2e_train/train_output_for_reference
-                --gold_data /Users/s0g0a87/studies/coref-llms/data_coref/hebrew/conllu_gold/no_singleton/train
-                --eval_data /Users/s0g0a87/studies/coref-llms/data_coref/hebrew/conllu_gold/no_singleton/train
+                --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/train
+                --eval_data ../data_coref/hebrew/conllu_gold/no_singleton/train
                 --model_id gpt-4
                 --prompt_template doc_template
             2. Take the shortest example from the output and create the prompt for the e2e model (need to be done one time):
             3. Run the following command to create the predictions:
-                --exp_dir ../results/e2e_train/raw_text/dev
-                --gold_data /Users/s0g0a87/studies/coref-llms/data_coref/hebrew/conllu_gold/no_singleton/dev
-                --eval_data /Users/s0g0a87/studies/coref-llms/data_coref/hebrew/raw_documents/dev
+                --exp_dir ../results/heb/gpt/dev/e2e_train/raw_text
+                --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
+                --eval_data ../data_coref/hebrew/raw_documents/dev
                 --model_id gpt-4
                 --prompt_template e2e_template
 
         For running e2e on documented text we first produce prediction using train data:
             1. Run the following command to create some reference for teh prompt (need to be done one time):
                 --exp_dir ../results/e2e_train/train_output_for_reference
-                --gold_data /Users/s0g0a87/studies/coref-llms/data_coref/hebrew/conllu_gold/no_singleton/train
-                --eval_data /Users/s0g0a87/studies/coref-llms/data_coref/hebrew/conllu_gold/no_singleton/train
+                --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/train
+                --eval_data ../data_coref/hebrew/conllu_gold/no_singleton/train
                 --model_id gpt-4
                 --prompt_template doc_template
             2. Take the shortest example from the output and create the prompt for the e2e model (need to be done one time):
             3. Run the following command to create the predictions:
-                --exp_dir ../results/e2e_train/tokenized_text/dev
-                --gold_data /Users/s0g0a87/studies/coref-llms/data_coref/hebrew/conllu_gold/no_singleton/dev
-                --eval_data /Users/s0g0a87/studies/coref-llms/data_coref/hebrew/tokenized_documents/dev
+                --exp_dir ../results/heb/gpt/dev/e2e_train/tokenized_text
+                --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
+                --eval_data ../data_coref/hebrew/tokenized_documents/dev
                 --model_id gpt-4
                 --prompt_template e2e_template
 
@@ -92,7 +107,7 @@ def hebrew_coref():
     prompts = get_prompts(data, args.exp_dir, args.prompt_template)
 
     # response generation
-    responses = get_generations(prompts, args.exp_dir, args.model_id)
+    responses = get_generations(data, prompts, args.exp_dir, args.model_id)
 
     # extract answers from response
     doc_predictions = dataset_reader.aggregate(responses)
@@ -104,7 +119,7 @@ def hebrew_coref():
 
 def main():
     """
-    --exp_dir ./test_en --eval_data  /Users/s0g0a87/studies/coref-llms/data/example.jsonl --model_id gpt-4 --prompt_template doc_template     :return:
+    --exp_dir ./test_en --eval_data  ../data/example.jsonl --model_id gpt-4 --prompt_template doc_template     :return:
     """
 
 
@@ -134,7 +149,7 @@ def main():
     prompts = get_prompts(data, args.exp_dir, args.prompt_template)
 
     # response generation
-    responses = get_generations(prompts, args.exp_dir, args.model_id)
+    responses = get_generations(data, prompts, args.exp_dir, args.model_id)
 
     # extract answers from response
     doc_predictions = dataset_reader.aggregate(responses)
