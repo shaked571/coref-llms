@@ -74,6 +74,7 @@ def mention_template_heb(example: dict) -> str:
                "כש[הוא](#) איבד את [הכרה_ _של_ [_הוא]](#)(#)\n"
                "### Allow nested mentions\n"
                "### Mark both nested mentions and also inner nested mentions and every noun phrase which can be candidate\n"
+               "### Do not add any extra new files to the generated text\n"
                "### Mark all spans as if it is Ontonotes 5.0 coreference dataset\n"
                "### It is very important to keep the text exactly as it was except the mention Markdown\n"
                "### In the MarkDown [mention](#), '#' is the exact symbol, NOT A Number\n"

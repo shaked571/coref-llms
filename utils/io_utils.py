@@ -79,3 +79,7 @@ def write_sv(
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter=sep)
         writer.writeheader()
         writer.writerows(data)
+
+def apply_sentence_split_heuristic(tokenize, input_text):
+    input_text = input_text.split("# Coreference Clusters:\n")[-1].split("# Coreference Clusters\n")[-1]
+    return tokenize.sent_tokenize(input_text.replace(". [הארכה]", " [הארכה]").replace(".", ". "))

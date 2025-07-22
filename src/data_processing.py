@@ -280,7 +280,7 @@ class HebrewExampleDatasetReader:
 
         for predicted_file in os.listdir(self.predicted_data_path):
             doc_id = Path(predicted_file).name
-            doc_id_for_gold  = f"htb:{doc_id.replace('txt', 'conllu')}"
+            doc_id_for_gold  = f"htb:{doc_id.replace('txt', 'conllu')}" if not doc_id.startswith('htb') else doc_id + ".conllu"
             gold_path = os.path.join(self.gold_data_path, doc_id_for_gold)
             eval_path = os.path.join(self.predicted_data_path, doc_id)
             original_text, markdown_text_gold_mention = self.process_conll_file(gold_path)
@@ -399,14 +399,14 @@ class HebrewExampleDatasetReader:
         doc_key = dev_example["doc_key"]
         original_gen_text = generated_text
         # first split generated_text and input_text into sentences
-        if "\n" in generated_text:
-            newline_idx = generated_text.find("\n")
-            generated_text = generated_text[:newline_idx]
-        # generated_sents = tokenize.sent_tokenize(generated_text, "hebrew")
+        # if "\n" in generated_text:
+        #     newline_idx = generated_text.find("\n")
+        #     generated_text = generated_text[:newline_idx]
+        # generated_text =  generated_text.split()
         generated_sents = tokenize.sent_tokenize(generated_text)
         input_sents = tokenize.sent_tokenize(input_text)
         if len(generated_sents) != len(input_sents):
-            heuristic_fix_for_sent_sep = tokenize.sent_tokenize(input_text.replace(".", ". "))
+            heuristic_fix_for_sent_sep = apply_sentence_split_heuristic(tokenize, generated_text)
             if len(heuristic_fix_for_sent_sep) == len(input_sents):
                 generated_sents = heuristic_fix_for_sent_sep
                 print(f"Manage heuristic: {doc_key}")
@@ -421,7 +421,8 @@ class HebrewExampleDatasetReader:
                 print(f"doc key: {doc_key}")
                 print("-" * 20)
 
-        assert len(generated_sents) == len(input_sents)
+        if len(generated_sents) != len(input_sents):
+            raise ValueError("Something went wrong - input and generated texts don't match")
         try:
             input_mentions, generated_entities = [], []
             for generated_sent, input_sent in zip(generated_sents, input_sents):
@@ -469,6 +470,7 @@ class HebrewExampleDatasetReader:
             return doc_predicted_clusters
         except:
             return None
+
 
     def normalize_mention(self, input_m):
         pattern = r"\([^)]*#.*?\)"

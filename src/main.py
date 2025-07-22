@@ -1,8 +1,5 @@
 import os
 import argparse
-
-from transformers import AutoTokenizer
-
 from utils.io_utils import *
 from data_processing import get_dataset_readers, HebrewExampleDatasetReader
 from prompt import get_prompts
@@ -13,29 +10,36 @@ from evaluate import get_evaluations
 def hebrew_coref():
     """
        What I saw in 25/12/24 - which fails on the tokenizer - of NLTK that does not exist
-       The files of mentions_by_model are the mentions produced by  Danit's parse tree model with my mention detection model
+       The files of mentions_by_model_danit_parse are the mentions produced by  Danit's parse tree model with my mention detection model
        The mentioned produced using the script in: HebNpChunker/make_paper_mentions_for_llm.py
        The files of conllu_gold are the gold mentions (Can use the one "with singletons" to get all the mentions or without to do an easier version).
 
        In order to run gpt on "real life" mentions, you need to run the following command - gpt based:
-       --exp_dir ../results/heb/gpt/dev/md_mentions
+       --exp_dir ../results/heb/gpt/dev/danit_parse_md_mentions
        --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
-       --eval_data ../data_coref/hebrew/mentions_by_model/dev
-        --model_id gpt-4
+       --eval_data ../data_coref/hebrew/mentions_by_model_danit_parse/dev
+        --model_id gpt-4o
         --prompt_template doc_template
 
-       In order to run gpt on "real life" mentions, you need to run the following command - dicta based:
+       In order to run llm on "real life" mentions, you need to run the following command - dicta based:
        --exp_dir ../results/heb/dicta/dev/md_mentions
        --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
-       --eval_data ../data_coref/hebrew/mentions_by_model/dev
+       --eval_data ../data_coref/hebrew/mentions_by_model_danit_parse/dev
         --model_id dicta-il/dictalm2.0-instruct
+        --prompt_template doc_template
+
+       In order to run gpt on mentions produced by md that were parsed by gold, you need to run the following command - dicta based:
+       --exp_dir ../results/heb/gpt/dev/gold_parse_md_mentions
+       --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
+       --eval_data ../data_coref/hebrew/mentions_by_model_gold_parse/dev
+        --model_id gpt-4o
         --prompt_template doc_template
 
         In order to run gpt on gold mentions, you need to run the following command:
         --exp_dir  ../results/heb/gpt/dev/gold_mention
         --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
         --eval_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
-        --model_id gpt-4
+        --model_id gpt-4o
         --prompt_template doc_template
 
         In order to run gpt on gold mentions, you need to run the following command - dicta based:
@@ -50,14 +54,14 @@ def hebrew_coref():
                 --exp_dir ../results/e2e_train/train_output_for_reference
                 --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/train
                 --eval_data ../data_coref/hebrew/conllu_gold/no_singleton/train
-                --model_id gpt-4
+                --model_id gpt-4o
                 --prompt_template doc_template
             2. Take the shortest example from the output and create the prompt for the e2e model (need to be done one time):
             3. Run the following command to create the predictions:
                 --exp_dir ../results/heb/gpt/dev/e2e_train/raw_text
                 --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
                 --eval_data ../data_coref/hebrew/raw_documents/dev
-                --model_id gpt-4
+                --model_id gpt-4o
                 --prompt_template e2e_template
 
         For running e2e on documented text we first produce prediction using train data:
@@ -74,6 +78,18 @@ def hebrew_coref():
                 --eval_data ../data_coref/hebrew/tokenized_documents/dev
                 --model_id gpt-4
                 --prompt_template e2e_template
+
+                %%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+                Example to run in Server:
+                 conda activate coref-llms
+                 cd Dev/coref-llms/
+                 export PYTHONPATH=.
+                 python src/main.py --exp_dir results/heb/dicta/dev/e2e_train/danit_tokenization
+                                    --gold_data data_coref/hebrew/conllu_gold/no_singleton/dev
+                                    --eval_data data_coref/hebrew/tokenized_documents_danit_tokenization/dev
+                                    --model_id dicta-il/dictalm2.0-instruct
+                                    --prompt_template e2e_template
+
 
        """
     parser = argparse.ArgumentParser()
