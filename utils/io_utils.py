@@ -82,4 +82,4 @@ def write_sv(
 
 def apply_sentence_split_heuristic(tokenize, input_text):
     input_text = input_text.split("# Coreference Clusters:\n")[-1].split("# Coreference Clusters\n")[-1]
-    return tokenize.sent_tokenize(input_text.replace(". [הארכה]", " [הארכה]").replace(".", ". "))
+    return tokenize.sent_tokenize(input_text.replace(". [הארכה]", " [הארכה]").replace(". ה_ ארכה", " ה_ ארכה").replace(". ה ארכה", " ה ארכה").replace(". הארכה", " הארכה").replace(".", ". "))

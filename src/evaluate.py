@@ -1,6 +1,5 @@
 """Taken and modified from fast-coref repo: https://github.com/shtoshni/fast-coref"""
 import os
-import copy
 import numpy as np
 from collections import Counter
 from scipy.optimize import linear_sum_assignment
@@ -57,7 +56,6 @@ class CorefEvaluator(object):
         return self.get_precision(), self.get_recall(), self.get_f1()
 
     def get_component_f1(self):
-        # return {repr(e): e.get_f1() for e in self.evaluators}
         return {repr(e): e.get_prf_str() for e in self.evaluators}
 
 
@@ -100,26 +98,12 @@ class Evaluator(object):
         return self.p_num, self.p_den, self.r_num, self.r_den
 
     def get_prf_str(self):
-        # perf_str = (
-        #     f"Recall: {self.get_recall() * 100:.1f}, Precision: {self.get_precision() * 100:.1f}, "
-        #     f"F-score: {self.get_f1() * 100: .1f}\n"
-        # )
         perf_str = (
-            "Recall: {0:.1f}, Precision: {1:.1f}, ".format(
-                self.get_recall() * 100, self.get_precision() * 100
-            ),
-            "F-score: {0: .1f}\n".format(self.get_f1() * 100),
+            f"Recall: {self.get_recall() * 100:.1f}, Precision: {self.get_precision() * 100:.1f}, "
+            f"F-score: {self.get_f1() * 100: .1f}\n"
         )
 
         return perf_str
-
-
-def evaluate_documents(documents, metric, beta=1):
-    evaluator = Evaluator(metric, beta=beta)
-    for document in documents:
-        evaluator.update(document)
-    return evaluator.get_precision(), evaluator.get_recall(), evaluator.get_f1()
-
 
 def b_cubed(clusters, mention_to_gold):
     num, dem = 0, 0
@@ -207,14 +191,9 @@ def get_evaluations(doc_predictions: list, exp_dir: str):
     for doc_example in doc_predictions:
 
         doc_key = doc_example["doc_key"]
-
-        if len(doc_example["predicted_clusters"]) == 0:
-            continue
-
         evaluator.update(
             doc_example["predicted_clusters"],
             doc_example["gold_clusters"],
-            # [c for c in doc_example["gold_clusters"] if len(c) > 1], # not evaluating singletons
         )
 
         # get doc-wise F1 for error analysis
@@ -222,7 +201,6 @@ def get_evaluations(doc_predictions: list, exp_dir: str):
         doc_eval.update(
             doc_example["predicted_clusters"],
             doc_example["gold_clusters"],
-            # [c for c in doc_example["gold_clusters"] if len(c) > 1], # not evaluating singletons
         )
         doc_F1s[doc_key] = {
             "CoNLL_F1": doc_eval.get_f1(),

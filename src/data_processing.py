@@ -397,12 +397,7 @@ class HebrewExampleDatasetReader:
     ):
 
         doc_key = dev_example["doc_key"]
-        original_gen_text = generated_text
-        # first split generated_text and input_text into sentences
-        # if "\n" in generated_text:
-        #     newline_idx = generated_text.find("\n")
-        #     generated_text = generated_text[:newline_idx]
-        # generated_text =  generated_text.split()
+        original_gen_text = generated_text # This line is for Debugging
         generated_sents = tokenize.sent_tokenize(generated_text)
         input_sents = tokenize.sent_tokenize(input_text)
         if len(generated_sents) != len(input_sents):

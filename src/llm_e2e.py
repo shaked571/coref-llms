@@ -75,7 +75,7 @@ if __name__ == '__main__':
 
     messages = {fname: build_messages(doc)for fname, doc in all_raw_docs.items()}
     for fname, messages in messages.items():
-        response = completion_with_backoff(messages, 0.0, 8000, 0, 0)
+        response = completion_with_backoff(messages, 0, 8000, 0, 0)
         try:
             result = response.json()['choices'][0]['message']['content']
             print(result)

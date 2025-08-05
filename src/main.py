@@ -21,6 +21,15 @@ def hebrew_coref():
         --model_id gpt-4o
         --prompt_template doc_template
 
+       Test: In order to run gpt on "real life" mentions, you need to run the following command - o1 based:
+
+       --exp_dir ../results/heb/o1/test/danit_parse_md_mentions/danit_parse_md_mention_1
+       --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
+       --eval_data ../data_coref/hebrew/mentions_by_model_danit_parse/dev
+        --model_id o1
+        --prompt_template doc_template
+
+
        In order to run llm on "real life" mentions, you need to run the following command - dicta based:
        --exp_dir ../results/heb/dicta/dev/md_mentions
        --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
@@ -33,6 +42,13 @@ def hebrew_coref():
        --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/dev
        --eval_data ../data_coref/hebrew/mentions_by_model_gold_parse/dev
         --model_id gpt-4o
+        --prompt_template doc_template
+
+        Test: In order to run gpt on mentions produced by md that were parsed by gold, you need to run the following command - o1 based:
+       --exp_dir ../results/heb/o1/test/gold_parse_md_mentions/gold_parse_md_mention_1
+       --gold_data ../data_coref/hebrew/conllu_gold/no_singleton/test
+       --eval_data ../data_coref/hebrew/mentions_by_model_gold_parse/test
+        --model_id o1
         --prompt_template doc_template
 
         In order to run gpt on gold mentions, you need to run the following command:

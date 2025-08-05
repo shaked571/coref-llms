@@ -118,7 +118,7 @@ threadpoolctl==3.1.0
 tiktoken==0.7.0
 tokenizers==0.13.3
 toml==0.10.2
-torch==1.10.0
+# torch==1.10.0
 tqdm==4.62.2
 transformers==4.31.0
 typer==0.4.2

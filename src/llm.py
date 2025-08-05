@@ -5,13 +5,12 @@ os.environ["CUDA_VISIBLE_DEVICES"] = "1,3,7"
 
 import openai
 import tiktoken
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 import requests
 import base64
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from tqdm import tqdm
+import re
 
 from Crypto.PublicKey import RSA
 from Crypto.Signature import PKCS1_v1_5
@@ -21,12 +20,19 @@ from Crypto.Hash import SHA256
 from utils.io_utils import *
 import torch
 
+
+
 # Check if CUDA (NVIDIA GPU) is available
 print(torch.cuda.is_available())
 # If True, print the number of GPUs and the name of the first GPU
 if torch.cuda.is_available():
     print(f"Number of GPUs: {torch.cuda.device_count()}")
     print(f"GPU Name: {torch.cuda.get_device_name(0)}")
+
+
+
+
+
 
 def get_generations(data, prompts: dict, exp_dir: str, model_id: str) -> dict:
     # run generation
@@ -47,7 +53,6 @@ def get_generations(data, prompts: dict, exp_dir: str, model_id: str) -> dict:
 
     while True:
         invalid_generations = {}
-
         for g_key, gen in generations.items():
             if not is_valid_gen(
                     data_by_doc[g_key]["input_context_str"].strip(),
@@ -78,9 +83,18 @@ def get_generations(data, prompts: dict, exp_dir: str, model_id: str) -> dict:
 
 
 def is_valid_gen(input_text: str, g_key: str, generations: dict, output_priming: str) -> bool:
-    generations[g_key]["generated_text"] = generations[g_key]["generated_text"].strip().strip("</s>").strip("<s>").split("# Coreference Clusters:\n")[-1].split("# Coreference Clusters\n")[-1]
+    original_text = generations[g_key]["generated_text"]
+    generations[g_key]["generated_text"] = generations[g_key]["generated_text"].strip().strip("</s>").strip("<s>")
     if generations[g_key]["generated_text"].startswith(output_priming): # handle cases where the llm just generate the all text
         generations[g_key]["generated_text"] = generations[g_key]["generated_text"].removeprefix(output_priming)
+
+    # Define a robust regex pattern to match variations of E2E_END and clusters_end
+    coref_pattern = re.compile(r"-+\n+#+\s*Coreference Clusters:?\n", re.IGNORECASE)
+    clusters_pattern = re.compile(r"-+\n+#+\s*Clusters:?\n", re.IGNORECASE)
+
+    # Remove everything after and including the matched patterns
+    generations[g_key]["generated_text"] = coref_pattern.split(generations[g_key]["generated_text"])[0].strip()
+    generations[g_key]["generated_text"] = clusters_pattern.split(generations[g_key]["generated_text"])[0].strip()
     generated_text = "{0}{1}".format(
         output_priming,
         generations[g_key]["generated_text"],
@@ -95,34 +109,40 @@ def is_valid_gen(input_text: str, g_key: str, generations: dict, output_priming:
 
 
 
-class HFModels:
-    """Wrapper for HuggingFace Models (e.g. Llama)"""
+from openai import OpenAI
+import os, json
+from tqdm import tqdm
 
-    def __init__(
-        self, model_name: str
-    ) -> None:
-        os.environ["TOKENIZERS_PARALLELISM"] = "false"
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            model_name, add_prefix_space=True
+class HFModels:  # preserves old name for backwards compatibility
+    def __init__(self, model_name, temperature=0.0):
+        self.model_name = model_name
+        self.temperature = temperature #
+        self.client = OpenAI(
+            api_key="EMPTY",
+            base_url="http://10.22.131.235:8000/v1",
         )
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-        bnb_config = BitsAndBytesConfig(
-            # load_in_4bit=True,
-            # bnb_4bit_quant_type="nf8",
-            # bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True,
-            load_in_8bit=True,
-            bnb_8bit_quant_type="nf8",
-            bnb_8bit_compute_dtype=torch.float16,
-        )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            quantization_config=bnb_config,
-            device_map="auto",
-            torch_dtype=torch.bfloat16,
-        )
-        # self.model.config.pad_token_id = self.model.config.eos_token_id
-        self.max_context_len = self.model.config.max_position_embeddings
+
+    def inference(self, data, prompts: dict, generation_filepath: str):
+        generations = {}
+        if os.path.exists(generation_filepath):
+            generations = json.load(open(generation_filepath))
+
+        new_keys, payloads = zip(*[(k, p) for k, p in prompts.items()
+                                   if k not in generations]) if prompts else ([], [])
+
+        for k, prompt in tqdm(zip(new_keys, payloads), total=len(payloads)):
+            response = self.client.chat.completions.create(
+                model=self.model_name,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            generations[k] = {
+                "prompt": prompt,
+                "generated_text": response.choices[0].message.content,
+            }
+
+        write_json(generations, generation_filepath)
+        return generations
+
 
     def build_prompt_messages(self, prompt):
         messages = [
@@ -131,51 +151,6 @@ class HFModels:
         return messages
 
 
-    def inference(self,data, prompts: dict, generation_filepath: str) -> dict:
-        temperature = 0.5
-        print(f"Generating prompts using temperature {temperature}...")
-        # resume generation if exist
-        generations = dict()
-        if os.path.exists(generation_filepath):
-            generations = read_json(generation_filepath)
-
-        for e_key, prompt in tqdm(prompts.items()):
-
-            if e_key not in generations:
-
-                # messages = self.build_prompt_messages(prompt)
-                # encoded = self.tokenizer.apply_chat_template(messages, return_tensors="pt").to(self.model.device)
-                encoded = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
-
-                outputs = self.model.generate(
-                    encoded["input_ids"],
-                    attention_mask=encoded["attention_mask"],
-                    max_new_tokens=min(self.max_context_len, encoded["input_ids"].shape[1] * 2),
-                    temperature=temperature,
-                    do_sample=True, # greedy decoding
-                    return_dict_in_generate=True,
-                    output_scores=True,
-                    max_time=60*10, # 10 minutes
-                    pad_token_id=self.tokenizer.eos_token_id , # Manually setting pad token ID
-                    use_cache=False
-                )
-                input_len = encoded["input_ids"].shape[1]
-                # generated tokens
-                generated_tokens = outputs.sequences[0, input_len:-1].tolist()
-                # generated_tokens = outputs.sequences[0].tolist()
-                generated_text = self.tokenizer.decode(generated_tokens)
-                try:  # because of some annoying encoding bug
-                    print("Finished Prompt: {0}{1}".format(prompt, generated_text))
-                except:
-                    print("Cannot generate text for example={0}".format(e_key))
-                generations[e_key] = {
-                    "prompt": prompt,
-                    "generated_text": generated_text,
-                }
-                write_json(generations, generation_filepath)
-
-        write_json(generations, generation_filepath)
-        return generations
 
 
 class OpenAIModel:
@@ -197,13 +172,42 @@ class OpenAIModel:
             "max_context_len": 16000,
             "input_cost": 0.0000025,
             "output_cost": 0.00001,
-        },"o1": {
+        },
+        "gpt-4o-mini": {
             "max_context_len": 16000,
             "input_cost": 0.0000025,
             "output_cost": 0.00001,
         },
-        "gpt-3.5-turbo": {
+        "gemini-2.5-pro": {
+            "max_context_len": 8000,
+            "input_cost": 0.0000025,
+            "output_cost": 0.00001,
+        },
+        "gemini-2.0-flash": {
+            "max_context_len": 8000,
+            "input_cost": 0.0000025,
+            "output_cost": 0.00001,
+        },
+        "gemini-2.0-flash-lite": {
+            "max_context_len": 8000,
+            "input_cost": 0.0000025,
+            "output_cost": 0.00001,
+        },"o1": {
+            "max_context_len": 16000,
+            "input_cost": 0.0000025,
+            "output_cost": 0.00001,
+        },"o3": {
+            "max_context_len": 16000,
+            "input_cost": 0.0000025,
+            "output_cost": 0.00001,
+        },
+        "gpt-35-turbo": {
             "max_context_len": 4000,
+            "input_cost": 0.0000015,  # $0.003 per 1K tokens
+            "output_cost": 0.000002,  # $0.004 per 1K tokens
+        },
+        "gpt-4.1": {
+            "max_context_len": 16000,
             "input_cost": 0.0000015,  # $0.003 per 1K tokens
             "output_cost": 0.000002,  # $0.004 per 1K tokens
         },
@@ -220,36 +224,79 @@ class OpenAIModel:
     }
 
     def __init__(self, model_name: str) -> None:
-        self._api_version = "2024-10-21" if model_name != "o1" else "2024-12-01-preview"
+        self._api_version = self.determine_api_version(model_name)
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         self.model_name = model_name
-        self.tokenizer = tiktoken.encoding_for_model(model_name) if model_name != "o1" else  tiktoken.encoding_for_model("gpt-4-o")
+        self.tokenizer = tiktoken.encoding_for_model(model_name) if model_name not in {"o1","o3","gpt-4.1"} and not  model_name.startswith("gemini") else  tiktoken.encoding_for_model("gpt-4-o")
         self.model_info = OpenAIModel.MODEL_INFO[model_name]
         self.max_context_len = self.model_info["max_context_len"]
 
-    def create_payload(self, messages , model, temperature, max_tokens):
-        if model == "o1":
+    def determine_api_version(self, model_name: str) -> str:
+        """
+        Determines the API version based on the model name.
+        """
+        if model_name in {"o1","o3"} :
+            return "2024-12-01-preview"
+        elif model_name.startswith("gemini") :
+            return "v1"
+        return "2024-10-21"
+
+    def create_payload(self, messages, model, temperature, max_tokens):
+        """
+        Prepares the payload for model calls. Handles O1/O3, OpenAI, and Gemini Vertex models.
+        """
+        if model in {"o1", "o3"}:
+            # O1/O3, likely OpenAI-compatible
             return {
                 "model": model,
                 "task": "chat/completions",
                 "api-version": self._api_version,
                 "model-params": {
                     "messages": messages,
+                    # "temperature": temperature,
+                    # "max_tokens": max_tokens,
                 }
             }
+        elif model.startswith("gemini"):
+            # Convert OpenAI-style messages to Gemini-style contents
+            contents = []
+            for m in messages:
+                # Each message: {"role": "...", "content": "..."}
+                role = m.get("role", "user").replace("assistant", "user") # Gemini uses User rather than assistant
+                content = m.get("content", "")
+                # Gemini expects a "parts" array with one or more dicts (e.g., {"text": ...})
+                if isinstance(content, list):
+                    parts = [{"text": str(x)} for x in content]
+                else:
+                    parts = [{"text": str(content)}]
+                contents.append({"role": role, "parts": parts})
 
-        else:
             return {
-            "model": model,
-            "task": "chat/completions",
-            "api-version": self._api_version,
-            "model-params": {
-                "messages": messages,
-                "temperature": temperature,
-                "max_tokens": max_tokens,
+                "model": model,
+                "task": "generateContent",
+                "api-version": self._api_version,
+                "generation_config": {
+                    "temperature": temperature,
+                    "maxOutputTokens": max_tokens,
+                    "topP": 0.8,  #
+                    "topK": 40
+                          },
+                "model-params": {
+                    "contents": contents,
+                }
             }
-        }
-
+        else:
+            # Generic OpenAI format
+            return {
+                "model": model,
+                "task": "chat/completions",
+                "api-version": self._api_version,
+                "model-params": {
+                    "messages": messages,
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                }
+            }
     def get_headers(self):
         key_version = 2
         # key_version = 1
@@ -289,7 +336,8 @@ class OpenAIModel:
             model="gpt-4o",
 
     ):
-        url = "https://wmtllmgateway.stage.walmart.com/wmtllmgateway/v1/openai"
+        pathway = "google-genai" if model.startswith("gemini") else "openai"
+        url = f"https://wmtllmgateway.stage.walmart.com/wmtllmgateway/v1/{pathway}"
         payload = self.create_payload(messages=messages,
                                  model=model,
                                  temperature=temperature,
@@ -375,6 +423,14 @@ class OpenAIModel:
         # output the cost
         print(f"Estimated cost for {self.model_name}: ${estimated_cost:0.2f}")
 
+    def extract_gemini_response_text(self, response_json):
+        candidates = response_json.get("candidates", [])
+        if not candidates:
+            return ""
+        content = candidates[0].get("content", {})
+        parts = content.get("parts", [])
+        return "".join(part.get("text", "") for part in parts)
+
     def generate_text(self, e_key, prompt):
         max_generated_len = self.max_context_len - len(self.tokenizer.encode(prompt))
         temperature = 0.0
@@ -387,9 +443,8 @@ class OpenAIModel:
                 },
             ],
             max_tokens=max_generated_len,
-            temperature=temperature,
+            temperature= temperature,
         )
-
 
         if completion.status_code != 200:
             print(f"Completion status code: {completion.status_code}")
@@ -398,13 +453,18 @@ class OpenAIModel:
                 "prompt": prompt,
                 "generated_text": "",
             }
-        output_text = json.loads(completion.text)['choices'][0]['message']["content"]
+
+        response_json = json.loads(completion.text)
+        if self.model_name.startswith("gemini"):
+            output_text = self.extract_gemini_response_text(response_json)
+        else:
+            output_text = response_json['choices'][0]['message']["content"]
+
         print("Finished Prompt: {0}{1}".format(prompt, output_text))
         return {
             "prompt": prompt,
             "generated_text": output_text,
         }
-
 
 class AzureModel:
     """Wrapper for Azure Models (eg gpt-35, gpt-4)
@@ -508,31 +568,37 @@ MODEL_TYPE = {
     "llama-2": HFModels,
     "codellama": HFModels,
     "dicta-il/dictalm2.0-instruct": HFModels,
-    "gpt-3.5-turbo": OpenAIModel,
+    "gpt-35-turbo": OpenAIModel,
     "gpt-3.5-turbo-16k": OpenAIModel,
     "gpt-3.5-turbo-instruct": OpenAIModel,
     "gpt-4": OpenAIModel,
+    "gpt-4.1": OpenAIModel,
     "gpt-4o": OpenAIModel,
+    "gpt-4o-mini": OpenAIModel,
     "gpt-4-32k": OpenAIModel,
     "o1": OpenAIModel,
+    "o3": OpenAIModel,
+    "gemini-2.5-pro": OpenAIModel,
+    "gemini-2.0-flash-lite": OpenAIModel,
+    "gemini-2.0-flash": OpenAIModel
 }
 
-if __name__ == '__main__':
-    model_name = "gpt-4o"
-    model = OpenAIModel(model_name)
-    with open("prompt_temp", encoding='utf-8', mode='r') as file:
-        prompt = "\n".join(file.readlines())
-    #Annotate all entity mentions in the following text with coreference clusters. Use Markdown tags to indicate clusters in the output, with the following format [mention](#cluster_name)\n\nInput: [Tom](#) and [Mary](#) go to [the park](#). [It](#) was full of trees.\nOutput:"
-    max_generated_len = 8000 - len(model.tokenizer.encode(prompt))
-    completion = model.completion_with_backoff(
-        model=model.model_name,
-        messages=[
-            {
-                "role": "assistant",
-                "content": prompt,
-            },
-        ],
-        max_tokens=max_generated_len,
-        temperature=0.1,
-    )
-    output_text = json.loads(completion.text)['choices'][0]['message']["content"]
+# if __name__ == '__main__':
+#     model_name = "gpt-4o"
+#     model = OpenAIModel(model_name)
+#     with open("prompt_temp", encoding='utf-8', mode='r') as file:
+#         prompt = "\n".join(file.readlines())
+#     #Annotate all entity mentions in the following text with coreference clusters. Use Markdown tags to indicate clusters in the output, with the following format [mention](#cluster_name)\n\nInput: [Tom](#) and [Mary](#) go to [the park](#). [It](#) was full of trees.\nOutput:"
+#     max_generated_len = 16000 - len(model.tokenizer.encode(prompt))
+#     completion = model.completion_with_backoff(
+#         model=model.model_name,
+#         messages=[
+#             {
+#                 "role": "assistant",
+#                 "content": prompt,
+#             },
+#         ],
+#         max_tokens=max_generated_len,
+#         temperature=1.0,
+#     )
+#     output_text = json.loads(completion.text)['choices'][0]['message']["content"]

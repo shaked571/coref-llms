@@ -33,14 +33,14 @@ def doc_template(example: dict) -> str:
     ```
     Annotate all entity mentions in the following text with coreference clusters.
     Use Markdown tags to indicate clusters in the output, with the following format
-    [mention](#cluster_name)
+    [mention](#cluster_<number>)
 
     Input: [Tom](#) and [Mary](#) go to [the park](#). [It](#) was full of trees.
     Output: [Tom](#cluster_0) and [Mary](#cluster_1) go to [the park](#cluster_3). [It](#cluster_3) was full of trees.
     ```
     """
     # instructions
-    prompt = "Annotate all entity mentions in the following text with coreference clusters. Use Markdown tags to indicate clusters in the output, with the following format [mention](#cluster_name)\n\n"
+    prompt = "Finish the output given - Annotate all entity mentions in the following text with coreference clusters. Use Markdown tags to indicate clusters in the output, with the following format [mention](#cluster_name) - Do not add any extra information and do not add clusters that were not Marked\n\n"
 
     # add example itself
     prompt += "Input: {0}\nOutput:".format(example["input_context_str"])
