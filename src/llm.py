@@ -1,26 +1,32 @@
 import os
-import torch
 import time
-
-import openai
-import tiktoken
-from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 # from peft import PeftModel, PeftConfig
 
 from utils.io_utils import *
+
+# Controls for I/O frequency and logging
+BATCH_WRITE_EVERY = int(os.environ.get("BATCH_WRITE_EVERY", "20"))
+LOG_PROMPTS = os.environ.get("LOG_PROMPTS", "0") == "1"
 
 
 def get_generations(prompts: dict, exp_dir: str, model_id: str) -> dict:
 
     # run generation
     generation_filepath = os.path.join(exp_dir, "generations.json")
+    # Early-return if all prompts already generated
+    if os.path.exists(generation_filepath):
+        try:
+            existing = read_json(generation_filepath)
+            if set(prompts.keys()).issubset(set(existing.keys())):
+                return existing
+        except Exception:
+            pass
+
     model = MODEL_TYPE[model_id](model_id)
     if isinstance(model, OpenAIModel):
         model.compute_cost(prompts)
-    generations = model.inference(prompts, generation_filepath)
-
-    return generations
+    return model.inference(prompts, generation_filepath)
 
 
 class HFModels:
@@ -30,28 +36,39 @@ class HFModels:
         self, model_name: str, max_generated_len: int, max_context_len: int = 2048
     ) -> None:
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
+        # Lazy import heavy deps
+        try:
+            from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+            import torch  # noqa: F401
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=torch.float16,
+            )
+            quantization_config = bnb_config
+        except Exception:
+            from transformers import AutoModelForCausalLM, AutoTokenizer
+            quantization_config = None
+
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_name, add_prefix_space=True
         )
         self.tokenizer.pad_token = self.tokenizer.eos_token
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_compute_dtype=torch.float16,
-            # bnb_4bit_use_double_quant=True,
-            # load_in_8bit=True,
-            # bnb_8bit_quant_type="nf8",
-            # bnb_8bit_compute_dtype=torch.float16,
-        )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            # device_map=device,
-            device_map="auto",
-            # torch_dtype=torch.float16,
-            load_in_8bit=True,
-            rope_scaling={"type": "dynamic", "factor": 2},
-            quantization_config=bnb_config,
-        )
+
+        if quantization_config is not None:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                device_map="auto",
+                rope_scaling={"type": "dynamic", "factor": 2},
+                quantization_config=quantization_config,
+            )
+        else:
+            self.model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                device_map="auto",
+                rope_scaling={"type": "dynamic", "factor": 2},
+                load_in_8bit=True,
+            )
         self.model.config.pad_token_id = self.model.config.eos_token_id
         self.max_generated_len = max_generated_len  # TODO: this is obsolete
         self.max_context_len = max_context_len
@@ -63,36 +80,45 @@ class HFModels:
         if os.path.exists(generation_filepath):
             generations = read_json(generation_filepath)
 
+        written_since_last = 0
+
         for e_key, prompt in prompts.items():
 
             if e_key not in generations:
 
                 # try:
-                input_ids = self.tokenizer.encode(prompt, return_tensors="pt").cuda()
+                # Lazy import torch for device ops and inference mode
+                import torch
+                input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self.model.device)
 
-                outputs = self.model.generate(
-                    input_ids,
-                    max_new_tokens=self.max_context_len - input_ids.shape[1],
-                    # temperature=0.9,
-                    do_sample=False,  # greedy decoding
-                    return_dict_in_generate=True,
-                    output_scores=True,
-                    eos_token_id=13,
-                )
+                with torch.inference_mode():
+                    outputs = self.model.generate(
+                        input_ids,
+                        max_new_tokens=self.max_context_len - input_ids.shape[1],
+                        do_sample=False,  # greedy decoding
+                        return_dict_in_generate=True,
+                        output_scores=True,
+                        eos_token_id=13,
+                    )
                 input_len = input_ids.shape[1]
                 # generated tokens
                 generated_tokens = outputs.sequences[0, input_len:-1].tolist()
                 # generated_tokens = outputs.sequences[0].tolist()
                 generated_text = self.tokenizer.decode(generated_tokens)
-                try:  # because of some annoying encoding bug
-                    print("Finished Prompt: {0}{1}".format(prompt, generated_text))
-                except:
-                    continue
+                if LOG_PROMPTS:
+                    try:
+                        print("Finished Prompt: {0}{1}".format(prompt, generated_text))
+                    except Exception:
+                        pass
+                else:
+                    print(f"Finished example {e_key}")
                 generations[e_key] = {
                     "prompt": prompt,
                     "generated_text": generated_text,
                 }
-                write_json(generations, generation_filepath)
+                written_since_last += 1
+                if written_since_last % BATCH_WRITE_EVERY == 0:
+                    write_json(generations, generation_filepath)
                 # except:
                 # print("Cannot generate text for example={0}".format(example_key))
 
@@ -135,18 +161,24 @@ class OpenAIModel:
     def __init__(self, model_name: str) -> None:
         os.environ["TOKENIZERS_PARALLELISM"] = "false"
         self.model_name = model_name
+        # Lazy import tiktoken
+        import tiktoken
         self.tokenizer = tiktoken.encoding_for_model(model_name)
         self.model_info = OpenAIModel.MODEL_INFO[model_name]
         self.max_context_len = self.model_info["max_context_len"]
 
     def inference(self, prompts: dict, generation_filepath: str) -> dict:
 
+        # Lazy import openai
+        import openai
         openai.api_key = os.environ["OPENAI_API_KEY"]
 
         # resume generation if exist
         generations = dict()
         if os.path.exists(generation_filepath):
             generations = read_json(generation_filepath)
+
+        written_since_last = 0
 
         for e_key, prompt in prompts.items():
 
@@ -178,17 +210,22 @@ class OpenAIModel:
                             temperature=0,
                         )
                         output_text = completion.choices[0].message["content"]
-                    print("Finished Prompt: {0}{1}".format(prompt, output_text))
+                    if LOG_PROMPTS:
+                        print("Finished Prompt: {0}{1}".format(prompt, output_text))
+                    else:
+                        print(f"Finished example {e_key}")
                     generations[e_key] = {
                         "prompt": prompt,
                         "generated_text": output_text,
                     }
-                    write_json(generations, generation_filepath)
+                    written_since_last += 1
+                    if written_since_last % BATCH_WRITE_EVERY == 0:
+                        write_json(generations, generation_filepath)
 
                     if "gpt-4" in self.model_name:
                         time.sleep(60)
 
-                except:
+                except Exception:
                     print("Cannot generate text for example={0}".format(e_key))
 
         write_json(generations, generation_filepath)
@@ -248,6 +285,8 @@ class AzureModel:
     def inference(self, prompts: dict, generation_filepath: str) -> dict:
 
         DEPLOYMENT_NAME = "coref"
+        # Lazy import openai
+        import openai
 
         # resume generation if exist
         generations = dict()

@@ -2,14 +2,17 @@ from typing import List
 from collections import defaultdict
 from difflib import SequenceMatcher
 from nltk import tokenize
+import os
 
 import re
 import copy
 import difflib
 
-from transformers import AutoTokenizer
+# Lazy-load heavy transformers in get_dataset_readers to reduce import time
 
 from utils.io_utils import *
+
+LOG_DEBUG = os.environ.get("LOG_DEBUG", "0") == "1"
 
 
 def get_dataset_readers(args):
@@ -22,7 +25,8 @@ def get_dataset_readers(args):
     gold_data = read_jsonl(args.eval_data)
     # TODO refactor with predicted mentions
     predicted_data = read_jsonl(args.eval_data)
-    tokenizer = AutoTokenizer.from_pretrained("gpt2", add_prefix_space=True)
+    from transformers import AutoTokenizer
+    tokenizer = AutoTokenizer.from_pretrained("gpt2", add_prefix_space=True, use_fast=True)
     dataset_reader = DATASET_READERS[args.prompt_template](
         gold_data, predicted_data, tokenizer
     )
@@ -129,7 +133,8 @@ class DocExampleIterativeDecodingDatasetReader:
                     "nested_mentions": [str(cur_outside_span)],
                 }
 
-        print("nestedness=", nestedness)
+        if LOG_DEBUG:
+            print("nestedness=", nestedness)
         return nestedness
 
     def _generate_tags(self, mentionID, is_clusterID):
@@ -310,7 +315,8 @@ class DocExampleIterativeDecodingDatasetReader:
                 output_priming = self._remove_nesting(
                     output_priming, m_span, nestedness, mention_map
                 )
-                print(f"prompt for mention={m_str} is {output_priming}")
+                if LOG_DEBUG:
+                    print(f"prompt for mention={m_str} is {output_priming}")
 
                 doc_data.append(
                     {
@@ -516,13 +522,14 @@ class DocExampleIterativeDecodingDatasetReader:
             except:
                 print("Something wrong with doc_key={0}".format(doc_key))
                 continue
-        print(
-            "Process {0} out of {1} docs ({2:0.2f}%)".format(
-                len(doc_data),
-                len(self.split_data),
-                100 * len(doc_data) / len(self.split_data),
+        if LOG_DEBUG:
+            print(
+                "Process {0} out of {1} docs ({2:0.2f}%)".format(
+                    len(doc_data),
+                    len(self.split_data),
+                    100 * len(doc_data) / len(self.split_data),
+                )
             )
-        )
         return doc_data
 
 
@@ -860,13 +867,14 @@ class DocExampleDatasetReader:
         # except:
         #     print("Something wrong with doc_key={0}".format(doc_key))
         #     continue
-        print(
-            "Process {0} out of {1} docs ({2:0.2f}%)".format(
-                len(doc_data),
-                len(self.split_data),
-                100 * len(doc_data) / len(self.split_data),
+        if LOG_DEBUG:
+            print(
+                "Process {0} out of {1} docs ({2:0.2f}%)".format(
+                    len(doc_data),
+                    len(self.split_data),
+                    100 * len(doc_data) / len(self.split_data),
+                )
             )
-        )
         return doc_data
 
 

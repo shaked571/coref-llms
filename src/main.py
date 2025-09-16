@@ -1,8 +1,6 @@
 import os
 import argparse
 
-from transformers import AutoTokenizer
-
 from utils.io_utils import *
 from data_processing import get_dataset_readers
 from prompt import get_prompts
