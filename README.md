@@ -5,7 +5,9 @@
 ```
 conda create -n coref-llms python==3.8
 conda activate coref-llms
-pip install -r requirements.txt
+pip install -r requirements-min.txt  # minimal runtime deps
+# Optional: visualization extras
+# pip install -r requirements-viz.txt
 ```
 
 2. Set up PATH and OpenAI API key (with the environment variable OPENAI_API_KEY)
@@ -34,6 +36,11 @@ python src/main.py \
 	--model_id gpt-4 \
 	--prompt_template doc_template
 ```
+
+### Performance toggles
+- `COMPACT_JSON=1`: write compact JSON/JSONL to reduce file size and I/O time.
+- `BATCH_WRITE_EVERY=N` (default 20): batch generation writes to disk every N examples.
+- `LOG_PROMPTS=1`: print full prompts; default prints only example IDs.
 
 ## Citations
 ```

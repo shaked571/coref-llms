@@ -4,6 +4,7 @@ Containing read, write, and some conversions
 """
 
 from typing import List
+import os
 
 import json
 import csv
@@ -29,8 +30,12 @@ def read_json(filepath: str, encoding: str = "utf-8") -> dict:
 
 
 def write_json(d: dict, filepath: str, encoding="utf-8") -> None:
+    compact = os.environ.get("COMPACT_JSON", "0") == "1"
     with open(filepath, "w", encoding=encoding) as f:
-        json.dump(d, f, indent=4, ensure_ascii=False)
+        if compact:
+            json.dump(d, f, ensure_ascii=False, separators=(",", ":"))
+        else:
+            json.dump(d, f, indent=4, ensure_ascii=False)
 
 
 def read_jsonl(filepath: str, encoding: str = "utf-8") -> List[dict]:
@@ -43,9 +48,13 @@ def read_jsonl(filepath: str, encoding: str = "utf-8") -> List[dict]:
 
 
 def write_jsonl(data: list, filepath: str, encoding="utf-8") -> None:
+    compact = os.environ.get("COMPACT_JSON", "0") == "1"
     with open(filepath, "w", encoding=encoding) as f:
         for example in data:
-            f.write(json.dumps(example) + "\n")
+            if compact:
+                f.write(json.dumps(example, ensure_ascii=False, separators=(",", ":")) + "\n")
+            else:
+                f.write(json.dumps(example, ensure_ascii=False) + "\n")
 
 
 def read_sv(filepath: str, sep: str = ",", encoding: str = "utf-8") -> List[dict]:
